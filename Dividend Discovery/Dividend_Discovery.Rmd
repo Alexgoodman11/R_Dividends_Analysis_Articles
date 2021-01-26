@@ -1,0 +1,198 @@
+---
+title: "Dividend Discovery"
+output: 
+   html_document:
+    toc: yes
+    toc_depth: 3
+    css: ../style.css
+params:
+  date: !r Sys.Date()       
+---
+
+```{r, message=FALSE, warning = FALSE}
+library(data.table)
+library(rlang)
+library(ggplot2)
+library(ggrepel)
+library(riingo)
+library(tidyquant)
+library(kableExtra)
+library(RplotterPkg)
+library(RtsaPkg)
+```
+
+```{r,setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 12, fig.height = 8)
+```
+
+<div>Author: Rick Dean</div>
+<div>Article date: `r params$date`</div>
+
+<div class="abstract">
+  <p class="abstract">Abstract</p>
+  The following notes/R scripts were inspired from an article [Dividend Discovery](http://www.reproduciblefinance.com/2019/07/10/dividend-discovery/) by Jonathan Regenstein.
+</div>  
+
+<div class="note">Note: Be aware that this application has an internet request for dividend data that will take time to complete.</div>
+
+# Dividend Discovery
+## The data
+
+### Set the Tiingo API key token
+```{r}
+riingo::riingo_set_token(RtsaPkg::read_tingo_key())
+```
+
+### Prepare the S&P 500 data
+1. Using `tidyquant::tq_index()` get the tickers for S&P 500 index.
+```{r}
+sp_500_dt <- data.table::setDT(tidyquant::tq_index("SP500"))
+str(sp_500_dt)
+```
+2. Order the tickers by weight and select the top 30 S&P 500 tickers.
+```{r}
+tickers_dt <- sp_500_dt[order(-weight)][1:30]
+tickers_dt[1:10]
+```
+3. Get historic stock market prices for the top 30 S&P 500 between "1990-01-01" and "2018-12-31":
+```{r}
+prices_dt <- RtsaPkg::get_tiingo_stock_prices(symbols = tickers_dt$symbol, from = "1990-01-01", to = "2018-12-31")
+str(prices_dt)
+```
+4. Select *Symbol*, *Date*, *Close*, *DivCash*
+```{r}
+dividends_dt <- prices_dt[, .(Date, Close, DivCash, Date_alt = as.IDate(Date)), by = Symbol]
+str(dividends_dt)
+```
+<div class="note">Note: There are 29 symbols. One ticker is not supported by Tiingo -- "BRK.B" Berkshire Hathaway Inc. Class B</div>
+
+## Dividend payments
+### Select the most recent dividend payment
+```{r}
+dividends_latest_dt <- dividends_dt[DivCash > 0, .SD[.N], by = Symbol][order(-DivCash)]
+dividends_latest_dt[1:10]
+```
+
+
+<div class="note">Note: the stock split that happened in 2014 for Google paid in the form of a dividend.  We will filter this amount out along with just last dividends from 2018.</div>
+
+### Get the last posted dividends in 2018
+```{r}
+dividends_last_2018_dt <- dividends_dt[DivCash > 0 & DivCash < 200 & Date_alt > as.IDate("2017-12-31"),.SD[.N], by = Symbol][order(-DivCash)]
+str(dividends_last_2018_dt)
+```
+<div class="note">Note: we have 21 companies that posted dividends in the year 2018.</div>
+
+### Plot the dividends last posted in 2018
+```{r, fig.width=12}
+RplotterPkg::create_scatter_plot(
+  df = dividends_last_2018_dt,
+  aes_x = "Date_alt",
+  aes_y = "DivCash",
+  title = "Last Dividends Paid by S&P 500 Companies",
+  subtitle = "Top 21 in year 2018",
+  x_title = "Month",
+  y_title = "Dividends($)",
+  x_limits = as.Date(c("2018-10-01", "2018-12-31")),
+  x_major_breaks = seq(as.Date("2018-10-01"), as.Date("2018-12-31"), by="1 week"),
+  x_date_labels = "%b %d",
+  rot_y_tic_label = T,
+  y_limits = c(0.0, 2.0),
+  y_major_breaks = seq(0.0,2.0,0.2),
+  pts_size = 1.2,
+  pts_color = "blue",
+  pts_fill = "blue",
+  show_minor_grids = F
+) + ggrepel::geom_text_repel(mapping = aes(label = Symbol))
+```
+  
+## Compute the Total Annual Yield for 2018 
+<div class="note">Note: The Total Annual Yield (TAY) is defined as the sum of total dividends in 2018 divided by the closing price on the first dividend date.</div>
+1. Find the first dividend for each company in 2018:
+```{r}
+first_dividend_2018_dt <- dividends_dt[DivCash > 0 & DivCash < 200 & Date_alt > as.IDate("2017-12-31"), .SD[1L], by = Symbol][order(-DivCash)]
+first_dividend_2018_dt[1:10]
+```
+2. Find the sum of the total dividends in 2018:
+```{r}
+sum_dividend_2018_dt <- dividends_dt[DivCash > 0 & DivCash < 200 & Date_alt > as.IDate("2017-12-31"), lapply(.SD, sum), by = Symbol, .SDcols = "DivCash"][order(-DivCash)]
+sum_dividend_2018_dt <- sum_dividend_2018_dt[, .(Symbol, TotalDivCash = DivCash)]
+sum_dividend_2018_dt[1:10]
+```
+3. Outer join both data.tables:
+```{r}
+data.table::setkey(first_dividend_2018_dt, "Symbol")
+data.table::setkey(sum_dividend_2018_dt, "Symbol")
+tay_dividend_2018_dt <- first_dividend_2018_dt[sum_dividend_2018_dt]
+tay_dividend_2018_dt[1:10]
+```
+4. Compute `TAY = (TotalDivCash/Close) * 100`:
+```{r}
+tay_dividend_2018_dt <- tay_dividend_2018_dt[, TAY := (TotalDivCash/Close)*100][order(-TAY)]
+tay_dividend_2018_dt[1:10]
+```
+5. Plot the TAY:
+```{r}
+RplotterPkg::create_scatter_plot(
+  df = tay_dividend_2018_dt,
+  aes_x = "Date_alt",
+  aes_y = "TAY",
+  title = "Total Annual Yield(TAY) of Dividends",
+  subtitle = "Top companies in year 2018",
+  x_title = "Month",
+  y_title = "Yield(%)",
+  x_limits = as.Date(c("2018-01-01", "2018-08-01")),
+  x_major_breaks = seq(as.Date("2018-01-01"), as.Date("2018-08-01"), by="1 month"),
+  x_date_labels = "%b",
+  rot_y_tic_label = TRUE,
+  y_limits = c(0.0, 6.0),
+  y_major_breaks = seq(0.0,6.0,0.5),
+  pts_size = 1.2,
+  pts_color = "blue",
+  pts_fill = "blue",
+  show_minor_grids = F
+) + ggrepel::geom_text_repel(mapping = aes(label = Symbol))
+```
+
+## Dividends across the years
+1. Add a *year* variable to `dividends_dt`:
+```{r}
+dividends_dt[, Year := as.numeric(format(Date_alt, "%Y"))]
+dividends_dt[1:10]
+```
+
+2. Compute the total yearly dividend payout for each company each year:
+```{r}
+dividends_yearly_dt <- dividends_dt[, .(Total_Div = sum(DivCash)), by = .(Symbol, Year)]
+dividends_yearly_dt[1:10]
+```
+
+<div class="note">Note: For *AAPL* there was a stock split in years 2012, 2013, 2014 and then back down to $2 in 2015.</div>
+
+3. Create a column that shows increase/decrease from the previous year:
+```{r}
+dividends_yearly_dt[, Div_Increase := ifelse(Total_Div > shift(Total_Div,1), 1, 0)]
+dividends_yearly_dt <- na.omit(dividends_yearly_dt, cols = "Div_Increase")
+dividends_yearly_dt[1:10]
+```
+
+4. Get the total increases for each company:
+```{r}
+dividend_increases_dt = dividends_yearly_dt[, lapply(.SD, sum), by = Symbol, .SDcols = "Div_Increase"]
+dividend_increases_totals_dt <- dividend_increases_dt[, .(Symbol, Div_Increase_Total = Div_Increase)]
+dividend_increases_totals_dt <- dividend_increases_totals_dt[order(-Div_Increase_Total)]
+dividend_increases_totals_dt[1:10]
+```
+
+5. Plot the increases:
+```{r}
+RplotterPkg::create_bar_plot(
+  df = dividend_increases_totals_dt,
+  aes_x = "Symbol",
+  aes_y = "Div_Increase_Total",
+  do_coord_flip = T,
+  rot_y_tic_label = T,
+  y_title = "Years of Increase",
+  order_bars = "asc"
+)
+```

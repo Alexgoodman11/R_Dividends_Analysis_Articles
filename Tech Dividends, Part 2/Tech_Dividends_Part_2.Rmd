@@ -1,0 +1,143 @@
+---
+title: "Tech Dividends, Part 2"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    css: ../style.css
+params:
+  date: !r Sys.Date()     
+---
+
+```{r, message=FALSE, warning = FALSE}
+library(data.table)
+library(magrittr)
+library(ggplot2)
+library(ggrepel)
+library(RplotterPkg)
+library(RtsaPkg)
+```
+
+```{r,setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 12, fig.height = 8)
+```
+
+<div>Author: Rick Dean</div>
+<div>Article date: `r params$date`</div>
+
+<div class="abstract">
+  <p class="abstract">Abstract</p>
+  The following notes/R scripts were inspired from an article [Tech Dividends, Part 2](https://rviews.rstudio.com/2019/08/17/tech-dividends-part-2/) by Jonathan Regenstein.
+</div>  
+
+
+# Tech Dividends, Part 2
+## The data
+### Set the Tiingo API key token
+```{r}
+riingo::riingo_set_token(RtsaPkg::read_tingo_key())
+```
+
+## History of posted dividends
+1. Get 10 years of historic data between the dates 2009-01-01 and 2019-12-31:
+```{r}
+symbols <- c("IBM","HPQ","TXN","CSCO","INTC","ORCL","AAPL","MSFT","QCOM")
+
+dividends_dt <- RtsaPkg::get_tiingo_dividends(symbols = symbols, from = "2009-01-01", to = "2019-12-31")
+dividends_dt <- dividends_dt[, .(Symbol, Date, DivCash, Close)]
+str(dividends_dt)
+```
+2. Plot the historic data:
+```{r,fig.width=12, fig.height=12}
+RplotterPkg::create_scatter_plot(
+  df = dividends_dt,
+  aes_x = "Date",
+  aes_y = "DivCash",
+  aes_color = "Symbol",
+  title = "Dividends Posted by 9 Attractive Companies",
+  subtitle = "2009-01-01 to 2019-12-31",
+  x_title = "Year",
+  y_title = "Dividends($)",
+  x_limits = as.Date(c("2009-01-01", "2020-01-01")),
+  x_major_breaks = seq(as.Date("2009-01-01"), as.Date("2020-01-01"), by="1 year"),
+  x_date_labels = "%Y",
+  rot_y_tic_label = TRUE,
+  y_limits = c(0.0, 2.0),
+  y_major_breaks = seq(0.0,2.0,0.2),
+  pts_size = 1.2,
+  show_minor_grids = FALSE
+)
+```
+
+## Most recent dividend
+1. Get the most recent dividend posted:
+```{r}
+most_recent_df <- dividends_dt[, .SD[.N], by = Symbol]
+```
+
+2. Plot the latest postings:
+```{r}
+RplotterPkg::create_scatter_plot(
+  df = most_recent_df,
+  aes_x = "Date",
+  aes_y = "DivCash",
+  aes_color = "Symbol",
+  title = "Last Dividend Posted by 9 Attractive Companies in 2019",
+  x_title = "December",
+  y_title = "Dividends($)",
+  x_limits = as.Date(c("2019-12-01", "2020-01-01")),
+  x_major_breaks = seq(as.Date("2019-12-01"), as.Date("2020-01-01"), by="1 day"),
+  x_date_labels = "%d",
+  rot_y_tic_label = TRUE,
+  y_limits = c(0.0, 0.7),
+  y_major_breaks = seq(0.0,0.7,0.1),
+  pts_size = 1.2,
+  show_minor_grids = FALSE,
+) + ggrepel::geom_text_repel(mapping = aes(label = Symbol))
+```
+
+## Total Annual Yield for 2019
+
+<div class="note">Note: The Total Annual Yield (TAY) is defined as the sum of total dividends in 2019 divided by the closing price on the first dividend date.</div>
+
+1. Find the first dividend for each company in 2019:
+```{r}
+first_dividend_2019_dt <- dividends_dt[DivCash > 0 & Date > as.IDate("2018-12-31"), .SD[1L], by = Symbol][order(-DivCash)]
+first_dividend_2019_dt[1:10]
+```
+2. Find the sum of the total dividends in 2019:
+```{r}
+sum_dividend_2019_dt <- dividends_dt[DivCash > 0 & Date > as.IDate("2018-12-31"), lapply(.SD, sum), by = Symbol, .SDcols = "DivCash"][order(-DivCash)]
+sum_dividend_2019_dt <- sum_dividend_2019_dt[, .(Symbol, TotalDivCash = DivCash)]
+sum_dividend_2019_dt[1:10]
+```
+3. Outer join both data.tables:
+```{r}
+data.table::setkey(first_dividend_2019_dt, "Symbol")
+data.table::setkey(sum_dividend_2019_dt, "Symbol")
+tay_dividend_2019_dt <- first_dividend_2019_dt[sum_dividend_2019_dt]
+tay_dividend_2019_dt[1:10]
+```
+
+4. Compute `TAY = (TotalDivCash/Close) * 100`:
+```{r}
+tay_dividend_2019_dt <- tay_dividend_2019_dt[, TAY := (TotalDivCash/Close)*100][order(-TAY)]
+tay_dividend_2019_dt[1:10]
+```
+
+2. Plot the TAY for the companies as a bar chart:
+```{r}
+RplotterPkg::create_bar_plot(
+  df = tay_dividend_2019_dt,
+  aes_x = "Symbol",
+  aes_y = "TAY",
+  title = "Total Annual Yield for 2019",
+  x_title = "Symbol",
+  y_title = "Yield (%)",
+  do_coord_flip = T,
+  order_bars = "asc",
+  rot_y_tic_label = T,
+  bar_fill = "green",
+  bar_alpha = 0.5
+)
+```

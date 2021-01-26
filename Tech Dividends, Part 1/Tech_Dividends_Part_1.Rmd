@@ -1,0 +1,223 @@
+---
+title: "Tech Dividends, Part 1"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    css: ../style.css
+params:
+  date: !r Sys.Date()      
+---
+
+```{r, message=FALSE, warning = FALSE}
+library(data.table)
+library(magrittr)
+library(stringr)
+library(rlang)
+library(ggplot2)
+library(riingo)
+library(tidyquant)
+library(kableExtra)
+library(RplotterPkg)
+library(RtsaPkg)
+```
+
+```{r,setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 12, fig.height = 8)
+```
+
+<div>Author: Rick Dean</div>
+<div>Article date: `r params$date`</div>
+
+<div class="abstract">
+  <p class="abstract">Abstract</p>
+  The following notes/R scripts were inspired from an article [Tech Dividends, Part 1](https://rviews.rstudio.com/2019/08/07/tech-dividends-part1/) by Jonathan Regenstein.
+</div>  
+
+<div class="note">Note: Be aware that this application has an internet request for dividend data that will take time to complete.</div>
+
+# Tech Dividends, Part 1
+## The data
+### Set the Tiingo API key token
+```{r}
+riingo::riingo_set_token(RtsaPkg::read_tingo_key())
+```
+
+### Dividend prices for companies over a 10 year period
+1. Get the companies listed on the NASDAQ:
+```{r}
+nasdaq_dt <- data.table::setDT(tidyquant::tq_exchange("NASDAQ")) 
+str(nasdaq_dt)
+```
+
+2. Rename variables:
+```{r}
+nasdaq_new_dt <- nasdaq_dt[, .(Symbol = symbol, Company = company, LastSalePrice = last.sale.price, MarketCap = market.cap, IpoYear = ipo.year, Sector = sector)]
+```
+3. Make *MarketCap* numeric:
+```{r}
+marketcap <- nasdaq_new_dt$MarketCap
+marketcap <- str_remove_all(marketcap, "\\$")
+mil <- 1000000
+bil <- 1000*mil
+
+mils <- as.numeric(str_replace_all(marketcap,"[M]",""))*mil
+bils <- as.numeric(str_replace_all(marketcap,"[B]",""))*bil
+check_val <- function(i){
+  if(is.na(mils[[i]])){
+    return(bils[[i]]/1000)
+  }else {
+    return(mils[[i]]/1000)
+  }
+}
+vals_lst <- lapply(1:length(mils), check_val)
+nasdaq_new_dt <- nasdaq_new_dt[, MarketCap := unlist(vals_lst)]
+data.table::setorderv(nasdaq_new_dt, cols = "MarketCap", order = -1, na.last = T)
+```
+
+4. Get the NASDAQ company symbols based on *MarketCap* and that have IPO'd since 2007:
+```{r}
+nasdaq_new_dt <- nasdaq_new_dt[IpoYear > 2007,.(Symbol, MarketCap)]
+nasdaq_new_dt[1:10]
+```
+<div class="note">Note: There are 1484 companies that have IPO'd since 2007</div>
+
+5. Get the dividends posted among the top 600 NASDAQ companies:
+```{r}
+nasdaq_dividends_dt <-  RtsaPkg::get_tiingo_dividends(symbols = nasdaq_new_dt$Symbol[1:600], from = "2009-01-01", to = "2019-12-31")
+str(nasdaq_dividends_dt)
+```
+
+6. Add a *year* variable:
+```{r}
+nasdaq_dividends_dt[, Year := as.numeric(format(Date, "%Y"))]
+```
+7. Select variables:
+```{r}
+nasdaq_dividends_dt <- nasdaq_dividends_dt[, .(Symbol,Date,Year,Close,DivCash)]
+str(nasdaq_dividends_dt)
+```
+
+## First date when the companies posted a dividend
+1. Get the first observation from each *Symbol* grouping where a dividend was posted:
+```{r}
+first_dividend_dt <- nasdaq_dividends_dt[DivCash > 0, .SD[1L], by = Symbol]
+kbl(
+  x = first_dividend_dt,
+  format = "html",
+  caption = "First Posted Dividend Dates for Top NASDAQ Companies",
+  align = c("c", "c", "c", "c", "c")) %>% 
+kable_paper(full_width = T, position = "center") %>% 
+row_spec(0, background = "purple", color = "white, font_size = 22")
+```
+
+## Count for each year when a company first granted a dividend
+```{r}
+first_dividends_year_dt <- first_dividend_dt[, .N, by = Year][order(Year)]
+kbl(
+  x = first_dividends_year_dt,
+  format = "html",
+  caption = "Counts of First Posted Dividend Dates by Year for Top NASDAQ Companies",
+  align = c("c", "c")) %>% 
+kable_paper(full_width = T, position = "center") %>% 
+row_spec(0, background = "purple", color = "white, font_size = 22")
+```
+
+## Most recent posting in each company.
+1. Get the most recent dividend posting from each company:
+```{r}
+latest_dividends_dt <- nasdaq_dividends_dt[DivCash > 0, .SD[.N], by = Symbol][order(-DivCash)]
+```
+<div class="note">Note: The company "ZG" had a very large value and is filtered out in the plot below. </div>
+
+2. Plot the most recent dividends posted:
+```{r,fig.width=12}
+RplotterPkg::create_scatter_plot(
+  df = latest_dividends_dt,
+  aes_x = "Date",
+  aes_y = "DivCash",
+  title = "Last Dividends Paid by NASDAQ Companies",
+  x_title = "Month",
+  y_title = "Dividends($)",
+  rot_y_tic_label = TRUE,
+  x_limits = c(as.Date("2013-12-31"), as.Date("2020-01-01")),
+  x_major_date_breaks = "6 month",
+  x_date_labels = "%b-%Y",
+  y_limits = c(0.0, 5.0),
+  y_major_breaks = seq(0.0,5.0,0.5),
+  pts_size = 1.2,
+  pts_color = "blue",
+  pts_fill = "blue",
+  show_minor_grids = F
+) + ggrepel::geom_text_repel(mapping = aes(label = Symbol))
+```
+3. A more focused plot:
+```{r,fig.width=12}
+RplotterPkg::create_scatter_plot(
+  df = latest_dividends_dt,
+  aes_x = "Date",
+  aes_y = "DivCash",
+  title = "Last Dividends Paid by NASDAQ Companies",
+  x_title = "Month",
+  y_title = "Dividends($)",
+  rot_y_tic_label = TRUE,
+  x_limits = c(as.Date("2018-12-31"), as.Date("2020-01-01")),
+  x_major_date_breaks = "1 month",
+  x_date_labels = "%b-%Y",
+  y_limits = c(0.0, 0.7),
+  y_major_breaks = seq(0.0,0.7,0.1),
+  pts_size = 1.2,
+  pts_color = "blue",
+  pts_fill = "blue",
+  show_minor_grids = F
+) + ggrepel::geom_text_repel(mapping = aes(label = Symbol))
+```
+
+## Plot all the dividends posted by each company
+```{r, fig.height=10, fig.width=12}
+RplotterPkg::create_scatter_plot(
+  df = nasdaq_dividends_dt,
+  aes_x = "Date",
+  aes_y = "DivCash",
+  aes_color = "Symbol",
+  title = "All Dividends Paid by NASDAQ Companies",
+  x_title = "Year",
+  y_title = "Dividends($)",
+  rot_y_tic_label = TRUE,
+  x_limits = c(as.Date("2013-12-31"), as.Date("2020-01-01")),
+  x_major_date_breaks = "1 year",
+  x_date_labels = "%Y",
+  y_limits = c(0.0, 5.0),
+  y_major_breaks = seq(0.0,5.0,0.5),
+  pts_size = 1.2,
+  pts_color = "blue",
+  pts_fill = "blue",
+  show_minor_grids = F,
+  show_legend = F
+) 
+```
+
+## Grouped statistical summaries
+### Top 10 companies' dividend stats for 2019
+```{r}
+stats_comp_dividends_dt <- nasdaq_dividends_dt[Date > as.Date("2018-12-31"), .(N = .N, Mean = mean(DivCash), Median = median(DivCash), Min = min(DivCash), Max = max(DivCash), Total = sum(DivCash)), by = Symbol][order(-Total)]
+kbl(
+  x = stats_comp_dividends_dt[1:10],
+  format = "html",
+  caption = "Dividend Statistics for the Top 10 NASDAQ Companies in 2019",
+  align = c("c", "c", "c", "c", "c", "c")) %>% 
+kable_paper(full_width = T, position = "center") %>% 
+row_spec(0, background = "purple", color = "white, font_size = 22")
+```
+
+### Dividend stats by year
+```{r}
+stats_year_dividends_dt <- nasdaq_dividends_dt[, .(N = .N, Mean = mean(DivCash), Median = median(DivCash), Min = min(DivCash), Max = max(DivCash), Total = sum(DivCash)), by = Year][order(Year)]
+kbl(
+  x = stats_year_dividends_dt,
+  format = "html",
+  caption = "Dividend Statistics across the years for NASDAQ Companies",
+  align = c("c", "c", "c", "c", "c", "c")) %>% 
+kable_paper(full_width = T, position = "center") %>% 
+row_spec(0, background = "purple", color = "white, font_size = 22")
+```
